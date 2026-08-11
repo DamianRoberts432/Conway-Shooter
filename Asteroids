@@ -6,7 +6,7 @@ import sys
 import serial
 import socket
 import math
-import websockets
+from websockets.asyncio.server import serve
 from flask import Flask, Response
 
 app = Flask(__name__)
@@ -434,7 +434,7 @@ def start_servers():
 
 async def run_all():
     start_servers()
-    async with websockets.serve(ws_handler, "0.0.0.0", 3002):
+    async with serve(ws_handler, "0.0.0.0", 3002):
         await main_game_loop()
 
 if __name__ == "__main__":
