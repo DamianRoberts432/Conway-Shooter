@@ -12,6 +12,7 @@ import serial
 import socket
 import math
 import time
+import websockets  # FIXED: Explicitly use the base module directly to avoid signature mismatches
 from flask import Flask, Response
 
 app = Flask(__name__)
@@ -92,18 +93,15 @@ def tv_dashboard():
             ws.onmessage = (event) => {
                 let data = JSON.parse(event.data);
                 if (data.type === 'SYNC') {
-                    // Update shield metrics safely
                     document.getElementById('shield-fill').style.width = data.shield + '%';
                     document.getElementById('shield-txt').innerText = data.shield;
                     if(data.shield < 40) document.getElementById('shield-fill').style.backgroundColor = '#ff3333';
                     
                     let scale = 700 / 128;
 
-                    // Blurring trail wash creates stunning neon vector decay speeds
                     ctx.fillStyle = 'rgba(2, 2, 4, 0.40)';
                     ctx.fillRect(0, 0, 700, 700);
                     
-                    // 1. RENDER THE CENTER CITADEL SHIELD CORE
                     ctx.save();
                     ctx.strokeStyle = data.shield > 0 ? '#00aaff' : '#ff3333';
                     ctx.lineWidth = 3;
@@ -114,13 +112,11 @@ def tv_dashboard():
                     ctx.stroke();
                     ctx.restore();
 
-                    // 2. RENDER THE SWARMING MATRIX ORGANISMS
                     data.grid.forEach(cell => {
-                        ctx.fillStyle = colors[cell[2]];
+                        ctx.fillStyle = colors[cell];
                         ctx.fillRect(cell[0] * scale, cell[1] * scale, scale - 0.5, scale - 0.5);
                     });
 
-                    // 3. DRAW DYNAMIC LASER BEAM PROJECTILES
                     data.lasers.forEach(l => {
                         ctx.strokeStyle = colors[l.team];
                         ctx.lineWidth = 3;
@@ -130,7 +126,6 @@ def tv_dashboard():
                         ctx.stroke();
                     });
 
-                    // 4. DRAW EXPLOSION PARTICLE BURSTS
                     if (data.explosions) {
                         data.explosions.forEach(exp => {
                             ctx.save();
@@ -144,7 +139,6 @@ def tv_dashboard():
                         });
                     }
 
-                    // 5. DRAW HUMAN LINE TURRET RETICLES AT THE CENTER
                     for (let id in data.players) {
                         let p = data.players[id];
                         let col = colors[p.team];
@@ -161,7 +155,6 @@ def tv_dashboard():
                         ctx.lineTo(endX, endY);
                         ctx.stroke();
                         
-                        // Crosshair sight pointer ring
                         ctx.fillStyle = col;
                         ctx.beginPath();
                         ctx.arc(endX, endY, 3, 0, Math.PI * 2);
@@ -187,7 +180,6 @@ def route_player_input(line):
     if len(parts) < 2:
         return
         
-    # Isolate variables matching ColorGame open packet layout mappings safely
     if len(parts) == 3:
         player_id = parts[0].strip()
         team_req = parts[1].strip()
@@ -200,17 +192,15 @@ def route_player_input(line):
     if player_id not in players:
         players[player_id] = {
             "team": int(team_req) if team_req.isdigit() else 1,
-            "angle": 0.0 # Managed as rotational radians matching classic Asteroids orientation
+            "angle": 0.0 
         }
         
     p = players[player_id]
     
-    # Process Rotational Radian Angle adjustments cleanly on D-pad hold cycles
     if cmd == 'LEFT':    p["angle"] -= 0.15
     elif cmd == 'RIGHT': p["angle"] += 0.15
-    elif cmd == 'UP' or cmd == 'DOWN': pass # Unused slots inside turret framework
+    elif cmd == 'UP' or cmd == 'DOWN': pass 
     elif cmd == 'FIRE':
-        # Launch real-time high-velocity laser beams outward from center position (64,64)
         vx = math.cos(p["angle"]) * 2.8
         vy = math.sin(p["angle"]) * 2.8
         lasers.append({
@@ -244,38 +234,29 @@ def check_udp_socket_input(sock):
 def process_asteroids_physics_tick():
     global grid_cells, lasers, explosions, core_shield
     
-    # 1. MOVE LASERS AND INTERCEPT CELL COLLISIONS
     next_lasers = []
-    current_frame_hits = []
-    
     for l in lasers:
         l["x"] += l["vx"]
         l["y"] += l["vy"]
         
         lx, ly = int(l["x"]), int(l["y"])
-        
-        # Check boundary edge clips
         if lx < 0 or lx >= GRID_SIZE or ly < 0 or ly >= GRID_SIZE:
             continue
             
-        # Target bounding cell intersections directly inside hashing dictionary
         if (lx, ly) in grid_cells:
-            # Trigger shatter particle explosion event tracking parameters
             team_col = teams_config.get(l["team"], {"color": "#00ffff"})["color"]
             explosions.append({"x": l["x"], "y": l["y"], "rad": 2.0, "alpha": 1.0, "color": team_col})
-            del grid_cells[(lx, ly)] # Eliminate cell organismo instantly
+            del grid_cells[(lx, ly)] 
             continue
             
         next_lasers.append(l)
     lasers = next_lasers
 
-    # 2. RUN DECAY STEPS OVER ACTIVE EXPLOSIONS
     for exp in explosions:
         exp["rad"] += 1.5
         exp["alpha"] -= 0.15
-    explosions = [e for f, e in enumerate(explosions) if e["alpha"] > 0]
+    explosions = [e for e in explosions if e["alpha"] > 0]
 
-    # 3. RUN CONWAY cellular AUTOMATA GENERATION STEP
     neighbors_to_check = set()
     for (x, y) in grid_cells.keys():
         for i in range(-1, 2):
@@ -301,19 +282,15 @@ def process_asteroids_physics_tick():
             cell_state = max(counts, key=counts.get) if total == 3 else EMPTY
 
         if cell_state != EMPTY:
-            # ASTEROIDS GRAVITY VECTOR LOGIC: 
-            # Cells slowly bleed and lean toward the center core (64,64) over generations
             dx = 64 - x
             dy = 64 - y
             dist = math.sqrt(dx*dx + dy*dy)
             
             if dist <= 4:
-                # Target breached! Organism hit the Citadel center core layout
                 if core_shield > 0:
                     core_shield -= 1
-                continue # Dissolve cell on shield connection impact
+                continue 
                 
-            # Infuse slight step gravity bias shifts
             mx, my = x, y
             if random.random() < 0.12 and dist > 0:
                 mx = (x + int(dx/dist) + GRID_SIZE) % GRID_SIZE
@@ -323,7 +300,6 @@ def process_asteroids_physics_tick():
             
     grid_cells = next_cells
 
-    # Periodic space waves maintain swarm density flows if field gets wiped clean
     if len(grid_cells) < 150:
         seed_outer_space_cells()
 
@@ -338,19 +314,21 @@ async def broadcast_sync(ser, sock):
             "explosions": explosions,
             "shield": max(0, core_shield)
         })
-        await asyncio.gather(*[client.send(packet) for client in connected_clients])
+        await asyncio.gather(*[client.send(packet) for client in connected_clients], return_exceptions=True)
 
 async def ws_handler(websocket):
     connected_clients.add(websocket)
     try:
         async for message in websocket: pass  
-    finally: connected_clients.remove(websocket)
+    finally: 
+        connected_clients.remove(websocket)
 
 async def main_game_loop():
     ports = glob.glob('/dev/ttyUSB*') + glob.glob('/dev/ttyACM*')
     ser = serial.Serial(ports[0], 115200, timeout=0.01) if ports else None
     sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-    sock.bind(("0.0.0.0", 3001)); sock.setblocking(False)
+    sock.bind(("0.0.0.0", 3001))
+    sock.setblocking(False)
 
     async def run_high_speed_io_scanner():
         while True:
@@ -362,23 +340,26 @@ async def main_game_loop():
         while True:
             process_asteroids_physics_tick()
             await broadcast_sync(ser, sock)
-            await asyncio.sleep(0.05) # Accelerated to 50ms intervals for intense vector response speeds
+            await asyncio.sleep(0.05) 
 
     asyncio.create_task(run_high_speed_io_scanner())
     asyncio.create_task(run_shooter_physics_ticks())
 
 def start_servers():
     from threading import Thread
-    from websockets.server import serve
-    def run_flask(): app.run(host='0.0.0.0', port=3000, debug=False, use_reloader=False)
+    def run_flask(): 
+        app.run(host='0.0.0.0', port=3000, debug=False, use_reloader=False)
     Thread(target=run_flask, daemon=True).start()
 
 async def run_all():
     start_servers()
-    async with serve(ws_handler, "0.0.0.0", 3002):
+    # FIXED: Reconstructed the context wrapper using base module definitions to accommodate modern Python event runners
+    async with websockets.serve(ws_handler, "0.0.0.0", 3002):
         await main_game_loop()
         await asyncio.Event().wait()
 
 if __name__ == "__main__":
-    try: asyncio.run(run_all())
-    except KeyboardInterrupt: sys.exit(0)
+    try: 
+        asyncio.run(run_all())
+    except KeyboardInterrupt: 
+        sys.exit(0)
