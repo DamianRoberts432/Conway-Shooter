@@ -1,3 +1,8 @@
+/home/d/Desktop/Asteroids.py:372: DeprecationWarning: websockets.server.serve is deprecated
+  from websockets.server import serve
+ * Serving Flask app 'Asteroids'
+ * Debug mode: off
+Traceback (most recent call last):
   File "/home/d/Desktop/Asteroids.py", line 383, in <module>
     try: asyncio.run(run_all())
          ~~~~~~~~~~~^^^^^^^^^^^
@@ -12,3 +17,5 @@
            ~~~~~~~~~~~~~^^
   File "/home/d/Desktop/Asteroids.py", line 378, in run_all
     async with serve(ws_handler, "0.0.0.0", 3002):
+               ^^^^^
+NameError: name 'serve' is not defined
