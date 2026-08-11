@@ -23,7 +23,6 @@ players = {}
 lasers = []
 explosions = []
 core_shield = INITIAL_CORE_SHIELD
-game_started = False
 
 teams_config = {
     "1": {"color": "#ff3333", "name": "RED", "tag": "R"},
@@ -46,7 +45,6 @@ def reset_game_state():
 def seed_outer_space_cells():
     global grid_cells
     grid_cells.clear()
-
     for _ in range(300):
         side = random.randint(0, 3)
         if side == 0:
@@ -57,7 +55,6 @@ def seed_outer_space_cells():
             x, y = random.randint(0, 15), random.randint(0, GRID_SIZE - 1)
         else:
             x, y = random.randint(GRID_SIZE - 16, GRID_SIZE - 1), random.randint(0, GRID_SIZE - 1)
-
         grid_cells[(x, y)] = random.randint(1, 6)
 
 reset_game_state()
@@ -70,51 +67,11 @@ def tv_dashboard():
 <head>
     <title>Conway Asteroids: Center Defense</title>
     <style>
-        body {
-            background: #030305;
-            color: white;
-            font-family: monospace;
-            display: flex;
-            flex-direction: column;
-            align-items: center;
-            justify-content: center;
-            height: 100vh;
-            margin: 0;
-            overflow: hidden;
-        }
-        canvas {
-            background: #010103;
-            border: 4px solid #1a1a24;
-            box-shadow: 0 0 50px rgba(0,170,255,0.08);
-        }
-        #hud-panel {
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
-            width: 700px;
-            margin-bottom: 15px;
-            font-size: 22px;
-            font-weight: bold;
-            background: #090911;
-            padding: 15px;
-            border: 1px solid #202030;
-            box-sizing: border-box;
-        }
-        #shield-bar-container {
-            width: 300px;
-            height: 20px;
-            background: #222;
-            border: 2px solid #444;
-            border-radius: 5px;
-            overflow: hidden;
-        }
-        #shield-fill {
-            height: 100%;
-            width: 100%;
-            background: #00aaff;
-            transition: width 0.1s ease;
-            box-shadow: 0 0 10px #00aaff;
-        }
+        body { background:#030305; color:white; font-family:monospace; display:flex; flex-direction:column; align-items:center; justify-content:center; height:100vh; margin:0; overflow:hidden; }
+        canvas { background:#010103; border:4px solid #1a1a24; box-shadow:0 0 50px rgba(0,170,255,0.08); }
+        #hud-panel { display:flex; justify-content:space-between; align-items:center; width:700px; margin-bottom:15px; font-size:22px; font-weight:bold; background:#090911; padding:15px; border:1px solid #202030; box-sizing:border-box; }
+        #shield-bar-container { width:300px; height:20px; background:#222; border:2px solid #444; border-radius:5px; overflow:hidden; }
+        #shield-fill { height:100%; width:100%; background:#00aaff; transition:width 0.1s ease; box-shadow:0 0 10px #00aaff; }
     </style>
 </head>
 <body>
@@ -128,7 +85,7 @@ def tv_dashboard():
         const canvas = document.getElementById('gameCanvas');
         const ctx = canvas.getContext('2d');
         const scale = 700 / 128;
-        const colors = {1:'#ff3333', 2:'#00aaff', 3:'#33cc33', 4:'#e6b800', 5:'#ff00ff', 6:'#00ffff'};
+        const colors = {1:'#ff3333',2:'#00aaff',3:'#33cc33',4:'#e6b800',5:'#ff00ff',6:'#00ffff'};
         const ws = new WebSocket('ws://' + location.hostname + ':3002');
 
         ws.onmessage = (event) => {
@@ -203,19 +160,15 @@ def tv_dashboard():
                 ctx.fill();
             }
         };
-
-        ws.onopen = () => console.log('WebSocket connected');
-        ws.onerror = (e) => console.error('WebSocket error', e);
     </script>
 </body>
 </html>
-    """
+"""
     return Response(html_content, mimetype="text/html")
 
 def parse_input_line(line):
     if not line or ":" not in line:
         return None
-
     parts = [p.strip() for p in line.split(":")]
     if len(parts) == 3:
         return parts[0], parts[1], parts[2]
@@ -224,36 +177,26 @@ def parse_input_line(line):
     return None
 
 def route_player_input(line):
-    global grid_cells, players, lasers
-
+    global players, lasers
     parsed = parse_input_line(line)
     if not parsed:
         return
-
     player_id, team_req, cmd = parsed
 
     if player_id not in players:
-        players[player_id] = {
-            "team": int(team_req) if team_req.isdigit() else 1,
-            "angle": 0.0,
-        }
-
+        players[player_id] = {"team": int(team_req) if team_req.isdigit() else 1, "angle": 0.0}
     p = players[player_id]
 
     if cmd == "LEFT":
         p["angle"] -= 0.15
     elif cmd == "RIGHT":
         p["angle"] += 0.15
-    elif cmd in ("UP", "DOWN"):
-        pass
     elif cmd == "FIRE":
-        vx = math.cos(p["angle"]) * 2.8
-        vy = math.sin(p["angle"]) * 2.8
         lasers.append({
             "x": float(CENTER_X),
             "y": float(CENTER_Y),
-            "vx": vx,
-            "vy": vy,
+            "vx": math.cos(p["angle"]) * 2.8,
+            "vy": math.sin(p["angle"]) * 2.8,
             "team": str(p["team"]),
         })
     elif cmd == "ESC":
@@ -264,8 +207,7 @@ def check_serial_input(ser):
         return
     try:
         while ser.in_waiting > 0:
-            raw_bytes = ser.readline()
-            line = raw_bytes.decode("utf-8", errors="ignore").strip()
+            line = ser.readline().decode("utf-8", errors="ignore").strip()
             route_player_input(line)
     except Exception:
         pass
@@ -275,9 +217,8 @@ def check_udp_socket_input(sock):
         return
     try:
         while True:
-            data, _addr = sock.recvfrom(1024)
-            line = data.decode("utf-8", errors="ignore").strip()
-            route_player_input(line)
+            data, _ = sock.recvfrom(1024)
+            route_player_input(data.decode("utf-8", errors="ignore").strip())
     except BlockingIOError:
         pass
     except Exception:
@@ -288,44 +229,32 @@ def process_asteroids_physics_tick():
 
     next_lasers = []
     for l in lasers:
-        l["x"] += l["vx"]
-        l["y"] += l["vy"]
-
+        l["x"] += l["vx"]; l["y"] += l["vy"]
         lx, ly = int(l["x"]), int(l["y"])
-        if lx < 0 or lx >= GRID_SIZE or ly < 0 or ly >= GRID_SIZE:
+        if not (0 <= lx < GRID_SIZE and 0 <= ly < GRID_SIZE):
             continue
-
         if (lx, ly) in grid_cells:
             team_col = teams_config.get(l["team"], {"color": "#00ffff"})["color"]
-            explosions.append({
-                "x": l["x"],
-                "y": l["y"],
-                "rad": 2.0,
-                "alpha": 1.0,
-                "color": team_col,
-            })
+            explosions.append({"x": l["x"], "y": l["y"], "rad": 2.0, "alpha": 1.0, "color": team_col})
             del grid_cells[(lx, ly)]
             continue
-
         next_lasers.append(l)
-
     lasers = next_lasers
 
     for exp in explosions:
         exp["rad"] += 1.5
         exp["alpha"] -= 0.15
-    explosions = [e for e in explosions if e["alpha"] > 0]
+    explosions[:] = [e for e in explosions if e["alpha"] > 0]
 
     neighbors_to_check = set()
-    for (x, y) in list(grid_cells.keys()):
+    for (x, y) in grid_cells.keys():
         for i in range(-1, 2):
             for j in range(-1, 2):
                 neighbors_to_check.add(((x + i + GRID_SIZE) % GRID_SIZE, (y + j + GRID_SIZE) % GRID_SIZE))
 
     next_cells = {}
     for (x, y) in neighbors_to_check:
-        counts = {1: 0, 2: 0, 3: 0, 4: 0, 5: 0, 6: 0}
-
+        counts = {1:0, 2:0, 3:0, 4:0, 5:0, 6:0}
         for i in range(-1, 2):
             for j in range(-1, 2):
                 if i == 0 and j == 0:
@@ -336,65 +265,53 @@ def process_asteroids_physics_tick():
 
         total = sum(counts.values())
         current_owner = grid_cells.get((x, y), EMPTY)
-
         if current_owner != EMPTY:
             cell_state = current_owner if total in (2, 3) else EMPTY
         else:
             cell_state = max(counts, key=counts.get) if total == 3 else EMPTY
 
         if cell_state != EMPTY:
-            dx = CENTER_X - x
-            dy = CENTER_Y - y
-            dist = math.sqrt(dx * dx + dy * dy)
-
+            dx, dy = CENTER_X - x, CENTER_Y - y
+            dist = math.sqrt(dx*dx + dy*dy)
             if dist <= 4:
                 if core_shield > 0:
                     core_shield -= 1
                 continue
-
             mx, my = x, y
             if random.random() < 0.12 and dist > 0:
                 mx = (x + int(dx / dist) + GRID_SIZE) % GRID_SIZE
                 my = (y + int(dy / dist) + GRID_SIZE) % GRID_SIZE
-
             next_cells[(mx, my)] = cell_state
 
     grid_cells = next_cells
-
     if len(grid_cells) < 150:
         seed_outer_space_cells()
 
 async def broadcast_sync():
     if not connected_clients:
         return
-
-    sparse_cells_packet = [[x, y, t] for (x, y), t in grid_cells.items()]
     packet = json.dumps({
         "type": "SYNC",
-        "grid": sparse_cells_packet,
+        "grid": [[x, y, t] for (x, y), t in grid_cells.items()],
         "players": players,
         "lasers": lasers,
         "explosions": explosions,
         "shield": max(0, core_shield),
     })
-
-    dead_clients = []
+    dead = []
     for client in list(connected_clients):
         try:
             await client.send(packet)
         except Exception:
-            dead_clients.append(client)
-
-    for dc in dead_clients:
-        connected_clients.discard(dc)
+            dead.append(client)
+    for c in dead:
+        connected_clients.discard(c)
 
 async def ws_handler(websocket):
     connected_clients.add(websocket)
     try:
         async for _ in websocket:
             pass
-    except Exception:
-        pass
     finally:
         connected_clients.discard(websocket)
 
@@ -428,18 +345,17 @@ async def main_game_loop():
 
     asyncio.create_task(run_high_speed_io_scanner())
     asyncio.create_task(run_shooter_physics_ticks())
-
     await asyncio.Event().wait()
 
 def start_servers():
+    from threading import Thread
     def run_flask():
         app.run(host="0.0.0.0", port=3000, debug=False, use_reloader=False)
-
-    import threading
-    threading.Thread(target=run_flask, daemon=True).start()
+    Thread(target=run_flask, daemon=True).start()
 
 async def run_all():
     start_servers()
+    # IMPORTANT: no bare `serve` symbol used anywhere
     async with websockets.serve(ws_handler, "0.0.0.0", 3002):
         await main_game_loop()
 
