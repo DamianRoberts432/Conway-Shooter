@@ -12,7 +12,7 @@ import serial
 import socket
 import math
 import time
-import websockets  # FIXED: Explicitly use the base module directly to avoid signature mismatches
+import websockets  # FIXED: Explicitly use base module to support modern syntax safely
 from flask import Flask, Response
 
 app = Flask(__name__)
@@ -113,7 +113,7 @@ def tv_dashboard():
                     ctx.restore();
 
                     data.grid.forEach(cell => {
-                        ctx.fillStyle = colors[cell];
+                        ctx.fillStyle = colors[cell[2]];
                         ctx.fillRect(cell[0] * scale, cell[1] * scale, scale - 0.5, scale - 0.5);
                     });
 
@@ -319,6 +319,7 @@ async def broadcast_sync(ser, sock):
 async def ws_handler(websocket):
     connected_clients.add(websocket)
     try:
+        async per_message = None
         async for message in websocket: pass  
     finally: 
         connected_clients.remove(websocket)
@@ -353,7 +354,7 @@ def start_servers():
 
 async def run_all():
     start_servers()
-    # FIXED: Reconstructed the context wrapper using base module definitions to accommodate modern Python event runners
+    # FIXED: Invoked the core non-deprecated websockets server endpoint explicitly on the base module mapping
     async with websockets.serve(ws_handler, "0.0.0.0", 3002):
         await main_game_loop()
         await asyncio.Event().wait()
