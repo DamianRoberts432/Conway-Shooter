@@ -1,29 +1,29 @@
-# ============================================================================
-# BLOCK 1 OF 2: IMPORTS, MATRIX CONFIGURATION, AND TV INTERFACE ROUTINES
-# ============================================================================
-
 import asyncio
 import json
 import random
-import os
 import glob
 import sys
 import serial
 import socket
 import math
-import time
-import websockets  # FIXED: Explicitly use base module to support modern syntax safely
+import websockets
 from flask import Flask, Response
 
 app = Flask(__name__)
 connected_clients = set()
 
-# High-density coordinate arena grid space footprint
 GRID_SIZE = 128
 EMPTY = 0
+CENTER_X = 64
+CENTER_Y = 64
+INITIAL_CORE_SHIELD = 100
 
-# Core game state managed strictly as a flat hashing dictionary of coordinate pairs
 grid_cells = {}
+players = {}
+lasers = []
+explosions = []
+core_shield = INITIAL_CORE_SHIELD
+game_started = False
 
 teams_config = {
     "1": {"color": "#ff3333", "name": "RED", "tag": "R"},
@@ -31,225 +31,284 @@ teams_config = {
     "3": {"color": "#33cc33", "name": "GREEN", "tag": "G"},
     "4": {"color": "#e6b800", "name": "YELLOW", "tag": "Y"},
     "5": {"color": "#ff00ff", "name": "MAGENTA", "tag": "M"},
-    "6": {"color": "#00ffff", "name": "CYAN", "tag": "C"}
+    "6": {"color": "#00ffff", "name": "CYAN", "tag": "C"},
 }
 
-players = {}
-lasers = []      # Active projectile objects: [{"x", "y", "vx", "vy", "team"}]
-explosions = []  # Particle decay caches: [{"x", "y", "rad", "alpha", "color"}]
-
-# Core Citadel properties sitting at the absolute center
-core_x = 64
-core_y = 64
-core_shield = 100
+def reset_game_state():
+    global grid_cells, players, lasers, explosions, core_shield
+    grid_cells = {}
+    players = {}
+    lasers = []
+    explosions = []
+    core_shield = INITIAL_CORE_SHIELD
+    seed_outer_space_cells()
 
 def seed_outer_space_cells():
     global grid_cells
-    # Spawn initial deep-space swarms around the outer borders of the 128x128 map
+    grid_cells.clear()
+
     for _ in range(300):
         side = random.randint(0, 3)
-        if side == 0:   # Top Ring Boundary
-            rx, ry = random.randint(0, GRID_SIZE-1), random.randint(0, 15)
-        elif side == 1: # Bottom Ring Boundary
-            rx, ry = random.randint(0, GRID_SIZE-1), random.randint(GRID_SIZE-16, GRID_SIZE-1)
-        elif side == 2: # Left Ring Boundary
-            rx, ry = random.randint(0, 15), random.randint(0, GRID_SIZE-1)
-        else:           # Right Ring Boundary
-            rx, ry = random.randint(GRID_SIZE-16, GRID_SIZE-1), random.randint(0, GRID_SIZE-1)
-        
-        grid_cells[(rx, ry)] = random.randint(1, 6)
+        if side == 0:
+            x, y = random.randint(0, GRID_SIZE - 1), random.randint(0, 15)
+        elif side == 1:
+            x, y = random.randint(0, GRID_SIZE - 1), random.randint(GRID_SIZE - 16, GRID_SIZE - 1)
+        elif side == 2:
+            x, y = random.randint(0, 15), random.randint(0, GRID_SIZE - 1)
+        else:
+            x, y = random.randint(GRID_SIZE - 16, GRID_SIZE - 1), random.randint(0, GRID_SIZE - 1)
 
-seed_outer_space_cells()
+        grid_cells[(x, y)] = random.randint(1, 6)
 
-@app.route('/tv')
+reset_game_state()
+
+@app.route("/tv")
 def tv_dashboard():
     html_content = """
-    <!DOCTYPE html>
-    <html>
-    <head>
-        <title>Conway Asteroids: Center Defense</title>
-        <style>
-            body { background: #030305; color: white; font-family: monospace; display: flex; flex-direction: column; align-items: center; justify-content: center; height: 100vh; margin: 0; overflow: hidden; }
-            canvas { background: #010103; border: 4px solid #1a1a24; box-shadow: 0 0 50px rgba(0,170,255,0.08); }
-            #hud-panel { display: flex; justify-content: space-between; align-items: center; width: 700px; margin-bottom: 15px; font-size: 22px; font-weight: bold; background: #090911; padding: 15px; border-radius: 10px; border: 2px solid #1a1a24; box-sizing: border-box; }
-            #shield-bar-container { width: 300px; height: 20px; background: #222; border: 2px solid #444; border-radius: 5px; overflow: hidden; }
-            #shield-fill { height: 100%; width: 100%; background: #00aaff; transition: width 0.1s ease; box-shadow: 0 0 10px #00aaff; }
-        </style>
-    </head>
-    <body>
-        <div id="hud-panel">
-            <span>CORE SHIELD:</span>
-            <div id='shield-bar-container'><div id='shield-fill'></div></div>
-            <span style="color:#00aaff;"><span id="shield-txt">100</span>%</span>
-        </div>
-        <canvas id="gameCanvas" width="700" height="700"></canvas>
-        <script>
-            let canvas = document.getElementById('gameCanvas');
-            let ctx = canvas.getContext('2d');
-            let ws = new WebSocket('ws://' + location.hostname + ':3002');
-            
-            const colors = {1:'#ff3333', 2:'#00aaff', 3:'#33cc33', 4:'#e6b800', 5:'#ff00ff', 6:'#00ffff'};
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Conway Asteroids: Center Defense</title>
+    <style>
+        body {
+            background: #030305;
+            color: white;
+            font-family: monospace;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            height: 100vh;
+            margin: 0;
+            overflow: hidden;
+        }
+        canvas {
+            background: #010103;
+            border: 4px solid #1a1a24;
+            box-shadow: 0 0 50px rgba(0,170,255,0.08);
+        }
+        #hud-panel {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            width: 700px;
+            margin-bottom: 15px;
+            font-size: 22px;
+            font-weight: bold;
+            background: #090911;
+            padding: 15px;
+            border: 1px solid #202030;
+            box-sizing: border-box;
+        }
+        #shield-bar-container {
+            width: 300px;
+            height: 20px;
+            background: #222;
+            border: 2px solid #444;
+            border-radius: 5px;
+            overflow: hidden;
+        }
+        #shield-fill {
+            height: 100%;
+            width: 100%;
+            background: #00aaff;
+            transition: width 0.1s ease;
+            box-shadow: 0 0 10px #00aaff;
+        }
+    </style>
+</head>
+<body>
+    <div id="hud-panel">
+        <span>CORE SHIELD:</span>
+        <div id="shield-bar-container"><div id="shield-fill"></div></div>
+        <span style="color:#00aaff;"><span id="shield-txt">100</span>%</span>
+    </div>
+    <canvas id="gameCanvas" width="700" height="700"></canvas>
+    <script>
+        const canvas = document.getElementById('gameCanvas');
+        const ctx = canvas.getContext('2d');
+        const scale = 700 / 128;
+        const colors = {1:'#ff3333', 2:'#00aaff', 3:'#33cc33', 4:'#e6b800', 5:'#ff00ff', 6:'#00ffff'};
+        const ws = new WebSocket('ws://' + location.hostname + ':3002');
 
-            ws.onmessage = (event) => {
-                let data = JSON.parse(event.data);
-                if (data.type === 'SYNC') {
-                    document.getElementById('shield-fill').style.width = data.shield + '%';
-                    document.getElementById('shield-txt').innerText = data.shield;
-                    if(data.shield < 40) document.getElementById('shield-fill').style.backgroundColor = '#ff3333';
-                    
-                    let scale = 700 / 128;
+        ws.onmessage = (event) => {
+            const data = JSON.parse(event.data);
+            if (data.type !== 'SYNC') return;
 
-                    ctx.fillStyle = 'rgba(2, 2, 4, 0.40)';
-                    ctx.fillRect(0, 0, 700, 700);
-                    
-                    ctx.save();
-                    ctx.strokeStyle = data.shield > 0 ? '#00aaff' : '#ff3333';
-                    ctx.lineWidth = 3;
-                    ctx.shadowBlur = 20;
-                    ctx.shadowColor = ctx.strokeStyle;
-                    ctx.beginPath();
-                    ctx.arc((64 * scale), (64 * scale), scale * 4, 0, Math.PI * 2);
-                    ctx.stroke();
-                    ctx.restore();
+            const shield = Math.max(0, data.shield || 0);
+            const shieldFill = document.getElementById('shield-fill');
+            document.getElementById('shield-txt').innerText = shield;
+            shieldFill.style.width = shield + '%';
+            shieldFill.style.backgroundColor = shield < 40 ? '#ff3333' : '#00aaff';
 
-                    data.grid.forEach(cell => {
-                        ctx.fillStyle = colors[cell[2]];
-                        ctx.fillRect(cell[0] * scale, cell[1] * scale, scale - 0.5, scale - 0.5);
-                    });
+            ctx.fillStyle = 'rgba(2, 2, 4, 0.40)';
+            ctx.fillRect(0, 0, 700, 700);
 
-                    data.lasers.forEach(l => {
-                        ctx.strokeStyle = colors[l.team];
-                        ctx.lineWidth = 3;
-                        ctx.beginPath();
-                        ctx.moveTo(l.x * scale, l.y * scale);
-                        ctx.lineTo((l.x - l.vx*0.5) * scale, (l.y - l.vy*0.5) * scale);
-                        ctx.stroke();
-                    });
+            ctx.save();
+            ctx.strokeStyle = shield > 0 ? '#00aaff' : '#ff3333';
+            ctx.lineWidth = 3;
+            ctx.shadowBlur = 20;
+            ctx.shadowColor = ctx.strokeStyle;
+            ctx.beginPath();
+            ctx.arc(64 * scale, 64 * scale, scale * 4, 0, Math.PI * 2);
+            ctx.stroke();
+            ctx.restore();
 
-                    if (data.explosions) {
-                        data.explosions.forEach(exp => {
-                            ctx.save();
-                            ctx.globalAlpha = exp.alpha;
-                            ctx.strokeStyle = exp.color;
-                            ctx.lineWidth = 2;
-                            ctx.beginPath();
-                            ctx.arc(exp.x * scale, exp.y * scale, exp.rad, 0, Math.PI*2);
-                            ctx.stroke();
-                            ctx.restore();
-                        });
-                    }
+            (data.grid || []).forEach(cell => {
+                const color = colors[cell[2]] || '#ffffff';
+                ctx.fillStyle = color;
+                ctx.fillRect(cell[0] * scale, cell[1] * scale, scale - 0.5, scale - 0.5);
+            });
 
-                    for (let id in data.players) {
-                        let p = data.players[id];
-                        let col = colors[p.team];
-                        
-                        let startX = 64 * scale;
-                        let startY = 64 * scale;
-                        let endX = startX + Math.cos(p.angle) * (scale * 9);
-                        let endY = startY + Math.sin(p.angle) * (scale * 9);
-                        
-                        ctx.strokeStyle = col;
-                        ctx.lineWidth = 4;
-                        ctx.beginPath();
-                        ctx.moveTo(startX, startY);
-                        ctx.lineTo(endX, endY);
-                        ctx.stroke();
-                        
-                        ctx.fillStyle = col;
-                        ctx.beginPath();
-                        ctx.arc(endX, endY, 3, 0, Math.PI * 2);
-                        ctx.fill();
-                    }
-                }
-            };
-        </script>
-    </body>
-    </html>
+            (data.lasers || []).forEach(l => {
+                const color = colors[l.team] || '#ffffff';
+                ctx.strokeStyle = color;
+                ctx.lineWidth = 3;
+                ctx.beginPath();
+                ctx.moveTo(l.x * scale, l.y * scale);
+                ctx.lineTo((l.x - l.vx * 0.5) * scale, (l.y - l.vy * 0.5) * scale);
+                ctx.stroke();
+            });
+
+            (data.explosions || []).forEach(exp => {
+                ctx.save();
+                ctx.globalAlpha = exp.alpha;
+                ctx.strokeStyle = exp.color || '#ffffff';
+                ctx.lineWidth = 2;
+                ctx.beginPath();
+                ctx.arc(exp.x * scale, exp.y * scale, exp.rad, 0, Math.PI * 2);
+                ctx.stroke();
+                ctx.restore();
+            });
+
+            for (const id in (data.players || {})) {
+                const p = data.players[id];
+                const col = colors[p.team] || '#ffffff';
+
+                const startX = 64 * scale;
+                const startY = 64 * scale;
+                const endX = startX + Math.cos(p.angle) * (scale * 9);
+                const endY = startY + Math.sin(p.angle) * (scale * 9);
+
+                ctx.strokeStyle = col;
+                ctx.lineWidth = 4;
+                ctx.beginPath();
+                ctx.moveTo(startX, startY);
+                ctx.lineTo(endX, endY);
+                ctx.stroke();
+
+                ctx.fillStyle = col;
+                ctx.beginPath();
+                ctx.arc(endX, endY, 3, 0, Math.PI * 2);
+                ctx.fill();
+            }
+        };
+
+        ws.onopen = () => console.log('WebSocket connected');
+        ws.onerror = (e) => console.error('WebSocket error', e);
+    </script>
+</body>
+</html>
     """
-    return Response(html_content, mimetype='text/html')
-# ============================================================================
-# BLOCK 2 OF 2: ROTATIONAL MATH, COLLISION INTERCEPTORS, AND SERVER EXECUTION
-# ============================================================================
+    return Response(html_content, mimetype="text/html")
+
+def parse_input_line(line):
+    if not line or ":" not in line:
+        return None
+
+    parts = [p.strip() for p in line.split(":")]
+    if len(parts) == 3:
+        return parts[0], parts[1], parts[2]
+    if len(parts) == 2:
+        return f"LEGACY_T{parts[0]}", parts[0], parts[1]
+    return None
 
 def route_player_input(line):
     global grid_cells, players, lasers
-    if not line or ":" not in line:
+
+    parsed = parse_input_line(line)
+    if not parsed:
         return
-        
-    parts = line.split(':')
-    if len(parts) < 2:
-        return
-        
-    if len(parts) == 3:
-        player_id = parts[0].strip()
-        team_req = parts[1].strip()
-        cmd = parts[2].strip()
-    else:
-        team_req = parts[0].strip()
-        cmd = parts[1].strip()
-        player_id = f"LEGACY_T{team_req}"
-        
+
+    player_id, team_req, cmd = parsed
+
     if player_id not in players:
         players[player_id] = {
             "team": int(team_req) if team_req.isdigit() else 1,
-            "angle": 0.0 
+            "angle": 0.0,
         }
-        
+
     p = players[player_id]
-    
-    if cmd == 'LEFT':    p["angle"] -= 0.15
-    elif cmd == 'RIGHT': p["angle"] += 0.15
-    elif cmd == 'UP' or cmd == 'DOWN': pass 
-    elif cmd == 'FIRE':
+
+    if cmd == "LEFT":
+        p["angle"] -= 0.15
+    elif cmd == "RIGHT":
+        p["angle"] += 0.15
+    elif cmd in ("UP", "DOWN"):
+        pass
+    elif cmd == "FIRE":
         vx = math.cos(p["angle"]) * 2.8
         vy = math.sin(p["angle"]) * 2.8
         lasers.append({
-            "x": 64.0, "y": 64.0,
-            "vx": vx, "vy": vy,
-            "team": str(p["team"])
+            "x": float(CENTER_X),
+            "y": float(CENTER_Y),
+            "vx": vx,
+            "vy": vy,
+            "team": str(p["team"]),
         })
-    elif cmd == 'ESC':
-        grid_cells.clear()
-        seed_outer_space_cells()
+    elif cmd == "ESC":
+        reset_game_state()
 
 def check_serial_input(ser):
-    if not ser: return
+    if not ser:
+        return
     try:
         while ser.in_waiting > 0:
             raw_bytes = ser.readline()
-            line = raw_bytes.decode('utf-8', errors='ignore').strip()
+            line = raw_bytes.decode("utf-8", errors="ignore").strip()
             route_player_input(line)
-    except Exception: pass
+    except Exception:
+        pass
 
 def check_udp_socket_input(sock):
-    if not sock: return
+    if not sock:
+        return
     try:
         while True:
-            data, addr = sock.recvfrom(1024)
-            line = data.decode('utf-8', errors='ignore').strip()
+            data, _addr = sock.recvfrom(1024)
+            line = data.decode("utf-8", errors="ignore").strip()
             route_player_input(line)
-    except BlockingIOError: pass
-    except Exception: pass
+    except BlockingIOError:
+        pass
+    except Exception:
+        pass
 
 def process_asteroids_physics_tick():
     global grid_cells, lasers, explosions, core_shield
-    
+
     next_lasers = []
     for l in lasers:
         l["x"] += l["vx"]
         l["y"] += l["vy"]
-        
+
         lx, ly = int(l["x"]), int(l["y"])
         if lx < 0 or lx >= GRID_SIZE or ly < 0 or ly >= GRID_SIZE:
             continue
-            
+
         if (lx, ly) in grid_cells:
             team_col = teams_config.get(l["team"], {"color": "#00ffff"})["color"]
-            explosions.append({"x": l["x"], "y": l["y"], "rad": 2.0, "alpha": 1.0, "color": team_col})
-            del grid_cells[(lx, ly)] 
+            explosions.append({
+                "x": l["x"],
+                "y": l["y"],
+                "rad": 2.0,
+                "alpha": 1.0,
+                "color": team_col,
+            })
+            del grid_cells[(lx, ly)]
             continue
-            
+
         next_lasers.append(l)
+
     lasers = next_lasers
 
     for exp in explosions:
@@ -258,78 +317,95 @@ def process_asteroids_physics_tick():
     explosions = [e for e in explosions if e["alpha"] > 0]
 
     neighbors_to_check = set()
-    for (x, y) in grid_cells.keys():
+    for (x, y) in list(grid_cells.keys()):
         for i in range(-1, 2):
             for j in range(-1, 2):
                 neighbors_to_check.add(((x + i + GRID_SIZE) % GRID_SIZE, (y + j + GRID_SIZE) % GRID_SIZE))
 
     next_cells = {}
     for (x, y) in neighbors_to_check:
-        counts = {1:0, 2:0, 3:0, 4:0, 5:0, 6:0}
+        counts = {1: 0, 2: 0, 3: 0, 4: 0, 5: 0, 6: 0}
+
         for i in range(-1, 2):
             for j in range(-1, 2):
-                if i == 0 and j == 0: continue
+                if i == 0 and j == 0:
+                    continue
                 nx, ny = (x + i + GRID_SIZE) % GRID_SIZE, (y + j + GRID_SIZE) % GRID_SIZE
                 if (nx, ny) in grid_cells:
                     counts[grid_cells[(nx, ny)]] += 1
-                    
+
         total = sum(counts.values())
         current_owner = grid_cells.get((x, y), EMPTY)
-        
+
         if current_owner != EMPTY:
-            cell_state = current_owner if (total == 2 or total == 3) else EMPTY
+            cell_state = current_owner if total in (2, 3) else EMPTY
         else:
             cell_state = max(counts, key=counts.get) if total == 3 else EMPTY
 
         if cell_state != EMPTY:
-            dx = 64 - x
-            dy = 64 - y
-            dist = math.sqrt(dx*dx + dy*dy)
-            
+            dx = CENTER_X - x
+            dy = CENTER_Y - y
+            dist = math.sqrt(dx * dx + dy * dy)
+
             if dist <= 4:
                 if core_shield > 0:
                     core_shield -= 1
-                continue 
-                
+                continue
+
             mx, my = x, y
             if random.random() < 0.12 and dist > 0:
-                mx = (x + int(dx/dist) + GRID_SIZE) % GRID_SIZE
-                my = (y + int(dy/dist) + GRID_SIZE) % GRID_SIZE
-                
+                mx = (x + int(dx / dist) + GRID_SIZE) % GRID_SIZE
+                my = (y + int(dy / dist) + GRID_SIZE) % GRID_SIZE
+
             next_cells[(mx, my)] = cell_state
-            
+
     grid_cells = next_cells
 
     if len(grid_cells) < 150:
         seed_outer_space_cells()
 
-async def broadcast_sync(ser, sock):
-    if connected_clients:
-        sparse_cells_packet = [[x, y, t] for (x, y), t in grid_cells.items()]
-        packet = json.dumps({
-            "type": "SYNC", 
-            "grid": sparse_cells_packet, 
-            "players": players, 
-            "lasers": lasers,
-            "explosions": explosions,
-            "shield": max(0, core_shield)
-        })
-        await asyncio.gather(*[client.send(packet) for client in connected_clients], return_exceptions=True)
+async def broadcast_sync():
+    if not connected_clients:
+        return
+
+    sparse_cells_packet = [[x, y, t] for (x, y), t in grid_cells.items()]
+    packet = json.dumps({
+        "type": "SYNC",
+        "grid": sparse_cells_packet,
+        "players": players,
+        "lasers": lasers,
+        "explosions": explosions,
+        "shield": max(0, core_shield),
+    })
+
+    await asyncio.gather(
+        *[client.send(packet) for client in list(connected_clients)],
+        return_exceptions=True
+    )
 
 async def ws_handler(websocket):
     connected_clients.add(websocket)
     try:
-        async per_message = None
-        async for message in websocket: pass  
-    finally: 
+        async for _ in websocket:
+            pass
+    finally:
         connected_clients.remove(websocket)
 
 async def main_game_loop():
-    ports = glob.glob('/dev/ttyUSB*') + glob.glob('/dev/ttyACM*')
-    ser = serial.Serial(ports[0], 115200, timeout=0.01) if ports else None
+    ports = glob.glob("/dev/ttyUSB*") + glob.glob("/dev/ttyACM*")
+    ser = None
+    if ports:
+        try:
+            ser = serial.Serial(ports[0], 115200, timeout=0.01)
+        except Exception:
+            ser = None
+
     sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-    sock.bind(("0.0.0.0", 3001))
-    sock.setblocking(False)
+    try:
+        sock.bind(("0.0.0.0", 3001))
+        sock.setblocking(False)
+    except Exception:
+        sock = None
 
     async def run_high_speed_io_scanner():
         while True:
@@ -340,27 +416,29 @@ async def main_game_loop():
     async def run_shooter_physics_ticks():
         while True:
             process_asteroids_physics_tick()
-            await broadcast_sync(ser, sock)
-            await asyncio.sleep(0.05) 
+            await broadcast_sync()
+            await asyncio.sleep(0.05)
 
     asyncio.create_task(run_high_speed_io_scanner())
     asyncio.create_task(run_shooter_physics_ticks())
 
+    await asyncio.Event().wait()
+
 def start_servers():
     from threading import Thread
-    def run_flask(): 
-        app.run(host='0.0.0.0', port=3000, debug=False, use_reloader=False)
+
+    def run_flask():
+        app.run(host="0.0.0.0", port=3000, debug=False, use_reloader=False)
+
     Thread(target=run_flask, daemon=True).start()
 
 async def run_all():
     start_servers()
-    # FIXED: Invoked the core non-deprecated websockets server endpoint explicitly on the base module mapping
     async with websockets.serve(ws_handler, "0.0.0.0", 3002):
         await main_game_loop()
-        await asyncio.Event().wait()
 
 if __name__ == "__main__":
-    try: 
+    try:
         asyncio.run(run_all())
-    except KeyboardInterrupt: 
+    except KeyboardInterrupt:
         sys.exit(0)
