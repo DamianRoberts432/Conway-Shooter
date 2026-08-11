@@ -1,0 +1,384 @@
+# ============================================================================
+# BLOCK 1 OF 2: IMPORTS, MATRIX CONFIGURATION, AND TV INTERFACE ROUTINES
+# ============================================================================
+
+import asyncio
+import json
+import random
+import os
+import glob
+import sys
+import serial
+import socket
+import math
+import time
+from flask import Flask, Response
+
+app = Flask(__name__)
+connected_clients = set()
+
+# High-density coordinate arena grid space footprint
+GRID_SIZE = 128
+EMPTY = 0
+
+# Core game state managed strictly as a flat hashing dictionary of coordinate pairs
+grid_cells = {}
+
+teams_config = {
+    "1": {"color": "#ff3333", "name": "RED", "tag": "R"},
+    "2": {"color": "#00aaff", "name": "BLUE", "tag": "B"},
+    "3": {"color": "#33cc33", "name": "GREEN", "tag": "G"},
+    "4": {"color": "#e6b800", "name": "YELLOW", "tag": "Y"},
+    "5": {"color": "#ff00ff", "name": "MAGENTA", "tag": "M"},
+    "6": {"color": "#00ffff", "name": "CYAN", "tag": "C"}
+}
+
+players = {}
+lasers = []      # Active projectile objects: [{"x", "y", "vx", "vy", "team"}]
+explosions = []  # Particle decay caches: [{"x", "y", "rad", "alpha", "color"}]
+
+# Core Citadel properties sitting at the absolute center
+core_x = 64
+core_y = 64
+core_shield = 100
+
+def seed_outer_space_cells():
+    global grid_cells
+    # Spawn initial deep-space swarms around the outer borders of the 128x128 map
+    for _ in range(300):
+        side = random.randint(0, 3)
+        if side == 0:   # Top Ring Boundary
+            rx, ry = random.randint(0, GRID_SIZE-1), random.randint(0, 15)
+        elif side == 1: # Bottom Ring Boundary
+            rx, ry = random.randint(0, GRID_SIZE-1), random.randint(GRID_SIZE-16, GRID_SIZE-1)
+        elif side == 2: # Left Ring Boundary
+            rx, ry = random.randint(0, 15), random.randint(0, GRID_SIZE-1)
+        else:           # Right Ring Boundary
+            rx, ry = random.randint(GRID_SIZE-16, GRID_SIZE-1), random.randint(0, GRID_SIZE-1)
+        
+        grid_cells[(rx, ry)] = random.randint(1, 6)
+
+seed_outer_space_cells()
+
+@app.route('/tv')
+def tv_dashboard():
+    html_content = """
+    <!DOCTYPE html>
+    <html>
+    <head>
+        <title>Conway Asteroids: Center Defense</title>
+        <style>
+            body { background: #030305; color: white; font-family: monospace; display: flex; flex-direction: column; align-items: center; justify-content: center; height: 100vh; margin: 0; overflow: hidden; }
+            canvas { background: #010103; border: 4px solid #1a1a24; box-shadow: 0 0 50px rgba(0,170,255,0.08); }
+            #hud-panel { display: flex; justify-content: space-between; align-items: center; width: 700px; margin-bottom: 15px; font-size: 22px; font-weight: bold; background: #090911; padding: 15px; border-radius: 10px; border: 2px solid #1a1a24; box-sizing: border-box; }
+            #shield-bar-container { width: 300px; height: 20px; background: #222; border: 2px solid #444; border-radius: 5px; overflow: hidden; }
+            #shield-fill { height: 100%; width: 100%; background: #00aaff; transition: width 0.1s ease; box-shadow: 0 0 10px #00aaff; }
+        </style>
+    </head>
+    <body>
+        <div id="hud-panel">
+            <span>CORE SHIELD:</span>
+            <div id='shield-bar-container'><div id='shield-fill'></div></div>
+            <span style="color:#00aaff;"><span id="shield-txt">100</span>%</span>
+        </div>
+        <canvas id="gameCanvas" width="700" height="700"></canvas>
+        <script>
+            let canvas = document.getElementById('gameCanvas');
+            let ctx = canvas.getContext('2d');
+            let ws = new WebSocket('ws://' + location.hostname + ':3002');
+            
+            const colors = {1:'#ff3333', 2:'#00aaff', 3:'#33cc33', 4:'#e6b800', 5:'#ff00ff', 6:'#00ffff'};
+
+            ws.onmessage = (event) => {
+                let data = JSON.parse(event.data);
+                if (data.type === 'SYNC') {
+                    // Update shield metrics safely
+                    document.getElementById('shield-fill').style.width = data.shield + '%';
+                    document.getElementById('shield-txt').innerText = data.shield;
+                    if(data.shield < 40) document.getElementById('shield-fill').style.backgroundColor = '#ff3333';
+                    
+                    let scale = 700 / 128;
+
+                    // Blurring trail wash creates stunning neon vector decay speeds
+                    ctx.fillStyle = 'rgba(2, 2, 4, 0.40)';
+                    ctx.fillRect(0, 0, 700, 700);
+                    
+                    // 1. RENDER THE CENTER CITADEL SHIELD CORE
+                    ctx.save();
+                    ctx.strokeStyle = data.shield > 0 ? '#00aaff' : '#ff3333';
+                    ctx.lineWidth = 3;
+                    ctx.shadowBlur = 20;
+                    ctx.shadowColor = ctx.strokeStyle;
+                    ctx.beginPath();
+                    ctx.arc((64 * scale), (64 * scale), scale * 4, 0, Math.PI * 2);
+                    ctx.stroke();
+                    ctx.restore();
+
+                    // 2. RENDER THE SWARMING MATRIX ORGANISMS
+                    data.grid.forEach(cell => {
+                        ctx.fillStyle = colors[cell[2]];
+                        ctx.fillRect(cell[0] * scale, cell[1] * scale, scale - 0.5, scale - 0.5);
+                    });
+
+                    // 3. DRAW DYNAMIC LASER BEAM PROJECTILES
+                    data.lasers.forEach(l => {
+                        ctx.strokeStyle = colors[l.team];
+                        ctx.lineWidth = 3;
+                        ctx.beginPath();
+                        ctx.moveTo(l.x * scale, l.y * scale);
+                        ctx.lineTo((l.x - l.vx*0.5) * scale, (l.y - l.vy*0.5) * scale);
+                        ctx.stroke();
+                    });
+
+                    // 4. DRAW EXPLOSION PARTICLE BURSTS
+                    if (data.explosions) {
+                        data.explosions.forEach(exp => {
+                            ctx.save();
+                            ctx.globalAlpha = exp.alpha;
+                            ctx.strokeStyle = exp.color;
+                            ctx.lineWidth = 2;
+                            ctx.beginPath();
+                            ctx.arc(exp.x * scale, exp.y * scale, exp.rad, 0, Math.PI*2);
+                            ctx.stroke();
+                            ctx.restore();
+                        });
+                    }
+
+                    // 5. DRAW HUMAN LINE TURRET RETICLES AT THE CENTER
+                    for (let id in data.players) {
+                        let p = data.players[id];
+                        let col = colors[p.team];
+                        
+                        let startX = 64 * scale;
+                        let startY = 64 * scale;
+                        let endX = startX + Math.cos(p.angle) * (scale * 9);
+                        let endY = startY + Math.sin(p.angle) * (scale * 9);
+                        
+                        ctx.strokeStyle = col;
+                        ctx.lineWidth = 4;
+                        ctx.beginPath();
+                        ctx.moveTo(startX, startY);
+                        ctx.lineTo(endX, endY);
+                        ctx.stroke();
+                        
+                        // Crosshair sight pointer ring
+                        ctx.fillStyle = col;
+                        ctx.beginPath();
+                        ctx.arc(endX, endY, 3, 0, Math.PI * 2);
+                        ctx.fill();
+                    }
+                }
+            };
+        </script>
+    </body>
+    </html>
+    """
+    return Response(html_content, mimetype='text/html')
+# ============================================================================
+# BLOCK 2 OF 2: ROTATIONAL MATH, COLLISION INTERCEPTORS, AND SERVER EXECUTION
+# ============================================================================
+
+def route_player_input(line):
+    global grid_cells, players, lasers
+    if not line or ":" not in line:
+        return
+        
+    parts = line.split(':')
+    if len(parts) < 2:
+        return
+        
+    # Isolate variables matching ColorGame open packet layout mappings safely
+    if len(parts) == 3:
+        player_id = parts[0].strip()
+        team_req = parts[1].strip()
+        cmd = parts[2].strip()
+    else:
+        team_req = parts[0].strip()
+        cmd = parts[1].strip()
+        player_id = f"LEGACY_T{team_req}"
+        
+    if player_id not in players:
+        players[player_id] = {
+            "team": int(team_req) if team_req.isdigit() else 1,
+            "angle": 0.0 # Managed as rotational radians matching classic Asteroids orientation
+        }
+        
+    p = players[player_id]
+    
+    # Process Rotational Radian Angle adjustments cleanly on D-pad hold cycles
+    if cmd == 'LEFT':    p["angle"] -= 0.15
+    elif cmd == 'RIGHT': p["angle"] += 0.15
+    elif cmd == 'UP' or cmd == 'DOWN': pass # Unused slots inside turret framework
+    elif cmd == 'FIRE':
+        # Launch real-time high-velocity laser beams outward from center position (64,64)
+        vx = math.cos(p["angle"]) * 2.8
+        vy = math.sin(p["angle"]) * 2.8
+        lasers.append({
+            "x": 64.0, "y": 64.0,
+            "vx": vx, "vy": vy,
+            "team": str(p["team"])
+        })
+    elif cmd == 'ESC':
+        grid_cells.clear()
+        seed_outer_space_cells()
+
+def check_serial_input(ser):
+    if not ser: return
+    try:
+        while ser.in_waiting > 0:
+            raw_bytes = ser.readline()
+            line = raw_bytes.decode('utf-8', errors='ignore').strip()
+            route_player_input(line)
+    except Exception: pass
+
+def check_udp_socket_input(sock):
+    if not sock: return
+    try:
+        while True:
+            data, addr = sock.recvfrom(1024)
+            line = data.decode('utf-8', errors='ignore').strip()
+            route_player_input(line)
+    except BlockingIOError: pass
+    except Exception: pass
+
+def process_asteroids_physics_tick():
+    global grid_cells, lasers, explosions, core_shield
+    
+    # 1. MOVE LASERS AND INTERCEPT CELL COLLISIONS
+    next_lasers = []
+    current_frame_hits = []
+    
+    for l in lasers:
+        l["x"] += l["vx"]
+        l["y"] += l["vy"]
+        
+        lx, ly = int(l["x"]), int(l["y"])
+        
+        # Check boundary edge clips
+        if lx < 0 or lx >= GRID_SIZE or ly < 0 or ly >= GRID_SIZE:
+            continue
+            
+        # Target bounding cell intersections directly inside hashing dictionary
+        if (lx, ly) in grid_cells:
+            # Trigger shatter particle explosion event tracking parameters
+            team_col = teams_config.get(l["team"], {"color": "#00ffff"})["color"]
+            explosions.append({"x": l["x"], "y": l["y"], "rad": 2.0, "alpha": 1.0, "color": team_col})
+            del grid_cells[(lx, ly)] # Eliminate cell organismo instantly
+            continue
+            
+        next_lasers.append(l)
+    lasers = next_lasers
+
+    # 2. RUN DECAY STEPS OVER ACTIVE EXPLOSIONS
+    for exp in explosions:
+        exp["rad"] += 1.5
+        exp["alpha"] -= 0.15
+    explosions = [e for f, e in enumerate(explosions) if e["alpha"] > 0]
+
+    # 3. RUN CONWAY cellular AUTOMATA GENERATION STEP
+    neighbors_to_check = set()
+    for (x, y) in grid_cells.keys():
+        for i in range(-1, 2):
+            for j in range(-1, 2):
+                neighbors_to_check.add(((x + i + GRID_SIZE) % GRID_SIZE, (y + j + GRID_SIZE) % GRID_SIZE))
+
+    next_cells = {}
+    for (x, y) in neighbors_to_check:
+        counts = {1:0, 2:0, 3:0, 4:0, 5:0, 6:0}
+        for i in range(-1, 2):
+            for j in range(-1, 2):
+                if i == 0 and j == 0: continue
+                nx, ny = (x + i + GRID_SIZE) % GRID_SIZE, (y + j + GRID_SIZE) % GRID_SIZE
+                if (nx, ny) in grid_cells:
+                    counts[grid_cells[(nx, ny)]] += 1
+                    
+        total = sum(counts.values())
+        current_owner = grid_cells.get((x, y), EMPTY)
+        
+        if current_owner != EMPTY:
+            cell_state = current_owner if (total == 2 or total == 3) else EMPTY
+        else:
+            cell_state = max(counts, key=counts.get) if total == 3 else EMPTY
+
+        if cell_state != EMPTY:
+            # ASTEROIDS GRAVITY VECTOR LOGIC: 
+            # Cells slowly bleed and lean toward the center core (64,64) over generations
+            dx = 64 - x
+            dy = 64 - y
+            dist = math.sqrt(dx*dx + dy*dy)
+            
+            if dist <= 4:
+                # Target breached! Organism hit the Citadel center core layout
+                if core_shield > 0:
+                    core_shield -= 1
+                continue # Dissolve cell on shield connection impact
+                
+            # Infuse slight step gravity bias shifts
+            mx, my = x, y
+            if random.random() < 0.12 and dist > 0:
+                mx = (x + int(dx/dist) + GRID_SIZE) % GRID_SIZE
+                my = (y + int(dy/dist) + GRID_SIZE) % GRID_SIZE
+                
+            next_cells[(mx, my)] = cell_state
+            
+    grid_cells = next_cells
+
+    # Periodic space waves maintain swarm density flows if field gets wiped clean
+    if len(grid_cells) < 150:
+        seed_outer_space_cells()
+
+async def broadcast_sync(ser, sock):
+    if connected_clients:
+        sparse_cells_packet = [[x, y, t] for (x, y), t in grid_cells.items()]
+        packet = json.dumps({
+            "type": "SYNC", 
+            "grid": sparse_cells_packet, 
+            "players": players, 
+            "lasers": lasers,
+            "explosions": explosions,
+            "shield": max(0, core_shield)
+        })
+        await asyncio.gather(*[client.send(packet) for client in connected_clients])
+
+async def ws_handler(websocket):
+    connected_clients.add(websocket)
+    try:
+        async for message in websocket: pass  
+    finally: connected_clients.remove(websocket)
+
+async def main_game_loop():
+    ports = glob.glob('/dev/ttyUSB*') + glob.glob('/dev/ttyACM*')
+    ser = serial.Serial(ports[0], 115200, timeout=0.01) if ports else None
+    sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    sock.bind(("0.0.0.0", 3001)); sock.setblocking(False)
+
+    async def run_high_speed_io_scanner():
+        while True:
+            check_serial_input(ser)
+            check_udp_socket_input(sock)
+            await asyncio.sleep(0.01)
+
+    async def run_shooter_physics_ticks():
+        while True:
+            process_asteroids_physics_tick()
+            await broadcast_sync(ser, sock)
+            await asyncio.sleep(0.05) # Accelerated to 50ms intervals for intense vector response speeds
+
+    asyncio.create_task(run_high_speed_io_scanner())
+    asyncio.create_task(run_shooter_physics_ticks())
+
+def start_servers():
+    from threading import Thread
+    from websockets.server import serve
+    def run_flask(): app.run(host='0.0.0.0', port=3000, debug=False, use_reloader=False)
+    Thread(target=run_flask, daemon=True).start()
+
+async def run_all():
+    start_servers()
+    async with serve(ws_handler, "0.0.0.0", 3002):
+        await main_game_loop()
+        await asyncio.Event().wait()
+
+if __name__ == "__main__":
+    try: asyncio.run(run_all())
+    except KeyboardInterrupt: sys.exit(0)
