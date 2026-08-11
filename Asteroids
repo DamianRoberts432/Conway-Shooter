@@ -1,13 +1,11 @@
 import asyncio
-import glob
 import json
-import math
 import random
-import socket
+import glob
 import sys
-import threading
-
 import serial
+import socket
+import math
 import websockets
 from flask import Flask, Response
 
@@ -25,6 +23,7 @@ players = {}
 lasers = []
 explosions = []
 core_shield = INITIAL_CORE_SHIELD
+game_started = False
 
 teams_config = {
     "1": {"color": "#ff3333", "name": "RED", "tag": "R"},
@@ -35,7 +34,6 @@ teams_config = {
     "6": {"color": "#00ffff", "name": "CYAN", "tag": "C"},
 }
 
-
 def reset_game_state():
     global grid_cells, players, lasers, explosions, core_shield
     grid_cells = {}
@@ -44,7 +42,6 @@ def reset_game_state():
     explosions = []
     core_shield = INITIAL_CORE_SHIELD
     seed_outer_space_cells()
-
 
 def seed_outer_space_cells():
     global grid_cells
@@ -63,9 +60,7 @@ def seed_outer_space_cells():
 
         grid_cells[(x, y)] = random.randint(1, 6)
 
-
 reset_game_state()
-
 
 @app.route("/tv")
 def tv_dashboard():
@@ -217,7 +212,6 @@ def tv_dashboard():
     """
     return Response(html_content, mimetype="text/html")
 
-
 def parse_input_line(line):
     if not line or ":" not in line:
         return None
@@ -229,9 +223,8 @@ def parse_input_line(line):
         return f"LEGACY_T{parts[0]}", parts[0], parts[1]
     return None
 
-
 def route_player_input(line):
-    global players, lasers
+    global grid_cells, players, lasers
 
     parsed = parse_input_line(line)
     if not parsed:
@@ -266,7 +259,6 @@ def route_player_input(line):
     elif cmd == "ESC":
         reset_game_state()
 
-
 def check_serial_input(ser):
     if not ser:
         return
@@ -277,7 +269,6 @@ def check_serial_input(ser):
             route_player_input(line)
     except Exception:
         pass
-
 
 def check_udp_socket_input(sock):
     if not sock:
@@ -291,7 +282,6 @@ def check_udp_socket_input(sock):
         pass
     except Exception:
         pass
-
 
 def process_asteroids_physics_tick():
     global grid_cells, lasers, explosions, core_shield
@@ -374,7 +364,6 @@ def process_asteroids_physics_tick():
     if len(grid_cells) < 150:
         seed_outer_space_cells()
 
-
 async def broadcast_sync():
     if not connected_clients:
         return
@@ -389,16 +378,15 @@ async def broadcast_sync():
         "shield": max(0, core_shield),
     })
 
-    dead = []
+    dead_clients = []
     for client in list(connected_clients):
         try:
             await client.send(packet)
         except Exception:
-            dead.append(client)
+            dead_clients.append(client)
 
-    for client in dead:
-        connected_clients.discard(client)
-
+    for dc in dead_clients:
+        connected_clients.discard(dc)
 
 async def ws_handler(websocket):
     connected_clients.add(websocket)
@@ -410,25 +398,20 @@ async def ws_handler(websocket):
     finally:
         connected_clients.discard(websocket)
 
-
 async def main_game_loop():
     ports = glob.glob("/dev/ttyUSB*") + glob.glob("/dev/ttyACM*")
     ser = None
     if ports:
         try:
             ser = serial.Serial(ports[0], 115200, timeout=0.01)
-            print(f"[INFO] Serial connected: {ports[0]}")
-        except Exception as e:
-            print(f"[WARN] Serial unavailable: {e}")
+        except Exception:
             ser = None
 
     sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     try:
         sock.bind(("0.0.0.0", 3001))
         sock.setblocking(False)
-        print("[INFO] UDP listening on 0.0.0.0:3001")
-    except Exception as e:
-        print(f"[WARN] UDP unavailable: {e}")
+    except Exception:
         sock = None
 
     async def run_high_speed_io_scanner():
@@ -448,24 +431,17 @@ async def main_game_loop():
 
     await asyncio.Event().wait()
 
-
-def start_flask_server():
+def start_servers():
     def run_flask():
         app.run(host="0.0.0.0", port=3000, debug=False, use_reloader=False)
 
-    t = threading.Thread(target=run_flask, daemon=True)
-    t.start()
-    print("[INFO] Flask dashboard: http://0.0.0.0:3000/tv")
-
+    import threading
+    threading.Thread(target=run_flask, daemon=True).start()
 
 async def run_all():
-    start_flask_server()
-    print("[INFO] WebSocket server on 0.0.0.0:3002")
-
-    # Use websockets.serve directly to avoid deprecated import paths
+    start_servers()
     async with websockets.serve(ws_handler, "0.0.0.0", 3002):
         await main_game_loop()
-
 
 if __name__ == "__main__":
     try:
