@@ -33,6 +33,7 @@ teams_config = {
     "6": {"color": "#00ffff", "name": "CYAN", "tag": "C"},
 }
 
+
 def reset_game_state():
     global grid_cells, players, lasers, explosions, core_shield
     grid_cells = {}
@@ -41,6 +42,7 @@ def reset_game_state():
     explosions = []
     core_shield = INITIAL_CORE_SHIELD
     seed_outer_space_cells()
+
 
 def seed_outer_space_cells():
     global grid_cells
@@ -57,7 +59,9 @@ def seed_outer_space_cells():
             x, y = random.randint(GRID_SIZE - 16, GRID_SIZE - 1), random.randint(0, GRID_SIZE - 1)
         grid_cells[(x, y)] = random.randint(1, 6)
 
+
 reset_game_state()
+
 
 @app.route("/tv")
 def tv_dashboard():
@@ -69,7 +73,7 @@ def tv_dashboard():
     <style>
         body { background:#030305; color:white; font-family:monospace; display:flex; flex-direction:column; align-items:center; justify-content:center; height:100vh; margin:0; overflow:hidden; }
         canvas { background:#010103; border:4px solid #1a1a24; box-shadow:0 0 50px rgba(0,170,255,0.08); }
-        #hud-panel { display:flex; justify-content:space-between; align-items:center; width:700px; margin-bottom:15px; font-size:22px; font-weight:bold; background:#090911; padding:15px; border:1px solid #202030; box-sizing:border-box; }
+        #hud-panel { display:flex; justify-content:space-between; align-items:center; width:700px; margin-bottom:15px; font-size:22px; font-weight:bold; background:#090911; padding:15px; border:1px solid #1a1a24; border-radius:12px; box-sizing:border-box; }
         #shield-bar-container { width:300px; height:20px; background:#222; border:2px solid #444; border-radius:5px; overflow:hidden; }
         #shield-fill { height:100%; width:100%; background:#00aaff; transition:width 0.1s ease; box-shadow:0 0 10px #00aaff; }
     </style>
@@ -130,11 +134,31 @@ def tv_dashboard():
             (data.explosions || []).forEach(exp => {
                 ctx.save();
                 ctx.globalAlpha = exp.alpha;
-                ctx.strokeStyle = exp.color || '#ffffff';
                 ctx.lineWidth = 2;
-                ctx.beginPath();
-                ctx.arc(exp.x * scale, exp.y * scale, exp.rad, 0, Math.PI * 2);
-                ctx.stroke();
+
+                if (exp.rainbow) {
+                    const rainbow = ['#ff3333', '#e6b800', '#33cc33', '#00ffff', '#00aaff', '#ff00ff'];
+                    for (let i = 0; i < 8; i++) {
+                        const angle = (i * Math.PI * 2) / 8;
+                        ctx.strokeStyle = rainbow[i % rainbow.length];
+                        ctx.beginPath();
+                        ctx.moveTo(
+                            exp.x * scale + Math.cos(angle) * (exp.rad * 0.3),
+                            exp.y * scale + Math.sin(angle) * (exp.rad * 0.3)
+                        );
+                        ctx.lineTo(
+                            exp.x * scale + Math.cos(angle) * exp.rad,
+                            exp.y * scale + Math.sin(angle) * exp.rad
+                        );
+                        ctx.stroke();
+                    }
+                } else {
+                    ctx.strokeStyle = exp.color || '#ffffff';
+                    ctx.beginPath();
+                    ctx.arc(exp.x * scale, exp.y * scale, exp.rad, 0, Math.PI * 2);
+                    ctx.stroke();
+                }
+
                 ctx.restore();
             });
 
@@ -166,6 +190,7 @@ def tv_dashboard():
 """
     return Response(html_content, mimetype="text/html")
 
+
 def parse_input_line(line):
     if not line or ":" not in line:
         return None
@@ -176,6 +201,7 @@ def parse_input_line(line):
         return f"LEGACY_T{parts[0]}", parts[0], parts[1]
     return None
 
+
 def route_player_input(line):
     global players, lasers
     parsed = parse_input_line(line)
@@ -184,7 +210,12 @@ def route_player_input(line):
     player_id, team_req, cmd = parsed
 
     if player_id not in players:
-        players[player_id] = {"team": int(team_req) if team_req.isdigit() else 1, "angle": 0.0}
+        team_num = 1
+        if str(team_req).isdigit():
+            t = int(team_req)
+            if 1 <= t <= 6:
+                team_num = t
+        players[player_id] = {"team": team_num, "angle": 0.0}
     p = players[player_id]
 
     if cmd == "LEFT":
@@ -202,6 +233,7 @@ def route_player_input(line):
     elif cmd == "ESC":
         reset_game_state()
 
+
 def check_serial_input(ser):
     if not ser:
         return
@@ -211,6 +243,7 @@ def check_serial_input(ser):
             route_player_input(line)
     except Exception:
         pass
+
 
 def check_udp_socket_input(sock):
     if not sock:
@@ -224,18 +257,26 @@ def check_udp_socket_input(sock):
     except Exception:
         pass
 
+
 def process_asteroids_physics_tick():
     global grid_cells, lasers, explosions, core_shield
 
     next_lasers = []
     for l in lasers:
-        l["x"] += l["vx"]; l["y"] += l["vy"]
+        l["x"] += l["vx"]
+        l["y"] += l["vy"]
         lx, ly = int(l["x"]), int(l["y"])
         if not (0 <= lx < GRID_SIZE and 0 <= ly < GRID_SIZE):
             continue
         if (lx, ly) in grid_cells:
-            team_col = teams_config.get(l["team"], {"color": "#00ffff"})["color"]
-            explosions.append({"x": l["x"], "y": l["y"], "rad": 2.0, "alpha": 1.0, "color": team_col})
+            explosions.append({
+                "x": l["x"],
+                "y": l["y"],
+                "rad": 2.0,
+                "alpha": 1.0,
+                "color": None,
+                "rainbow": True,
+            })
             del grid_cells[(lx, ly)]
             continue
         next_lasers.append(l)
@@ -254,7 +295,7 @@ def process_asteroids_physics_tick():
 
     next_cells = {}
     for (x, y) in neighbors_to_check:
-        counts = {1:0, 2:0, 3:0, 4:0, 5:0, 6:0}
+        counts = {1: 0, 2: 0, 3: 0, 4: 0, 5: 0, 6: 0}
         for i in range(-1, 2):
             for j in range(-1, 2):
                 if i == 0 and j == 0:
@@ -272,7 +313,7 @@ def process_asteroids_physics_tick():
 
         if cell_state != EMPTY:
             dx, dy = CENTER_X - x, CENTER_Y - y
-            dist = math.sqrt(dx*dx + dy*dy)
+            dist = math.sqrt(dx * dx + dy * dy)
             if dist <= 4:
                 if core_shield > 0:
                     core_shield -= 1
@@ -287,6 +328,7 @@ def process_asteroids_physics_tick():
     if len(grid_cells) < 150:
         seed_outer_space_cells()
 
+
 async def broadcast_sync():
     if not connected_clients:
         return
@@ -297,6 +339,8 @@ async def broadcast_sync():
         "lasers": lasers,
         "explosions": explosions,
         "shield": max(0, core_shield),
+        # TODO_NEXT_MONTH: Bridge multiplayer netplay from server.py via UDP feed.
+        # IDEA: import dominant team color + live wave seeds from server.py and spawn them at borders here.
     })
     dead = []
     for client in list(connected_clients):
@@ -307,6 +351,7 @@ async def broadcast_sync():
     for c in dead:
         connected_clients.discard(c)
 
+
 async def ws_handler(websocket):
     connected_clients.add(websocket)
     try:
@@ -314,6 +359,7 @@ async def ws_handler(websocket):
             pass
     finally:
         connected_clients.discard(websocket)
+
 
 async def main_game_loop():
     ports = glob.glob("/dev/ttyUSB*") + glob.glob("/dev/ttyACM*")
@@ -347,16 +393,21 @@ async def main_game_loop():
     asyncio.create_task(run_shooter_physics_ticks())
     await asyncio.Event().wait()
 
+
 def start_servers():
     from threading import Thread
+
     def run_flask():
         app.run(host="0.0.0.0", port=3000, debug=False, use_reloader=False)
+
     Thread(target=run_flask, daemon=True).start()
+
 
 async def run_all():
     start_servers()
     async with serve(ws_handler, "0.0.0.0", 3002):
         await main_game_loop()
+
 
 if __name__ == "__main__":
     try:
