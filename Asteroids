@@ -45,19 +45,57 @@ def reset_game_state():
 
 
 def seed_outer_space_cells():
+    """
+    Spawn Conway patterns (not noise) near borders so automata visibly advance inward.
+    """
     global grid_cells
     grid_cells.clear()
-    for _ in range(300):
+
+    gliders = [
+        [(0, 0), (1, 0), (2, 0), (2, 1), (1, 2)],
+        [(0, 1), (1, 2), (2, 0), (2, 1), (2, 2)],
+        [(0, 2), (1, 0), (1, 2), (2, 1), (2, 2)],
+        [(0, 0), (0, 1), (1, 1), (1, 2), (2, 1)],
+    ]
+
+    def place_pattern(px, py, team, pattern):
+        for dx, dy in pattern:
+            x, y = px + dx, py + dy
+            if 0 <= x < GRID_SIZE and 0 <= y < GRID_SIZE:
+                grid_cells[(x, y)] = team
+
+    for _ in range(80):
         side = random.randint(0, 3)
+        team = random.randint(1, 6)
+        pat = random.choice(gliders)
+
         if side == 0:
-            x, y = random.randint(0, GRID_SIZE - 1), random.randint(0, 15)
+            px, py = random.randint(0, GRID_SIZE - 4), random.randint(0, 6)
         elif side == 1:
-            x, y = random.randint(0, GRID_SIZE - 1), random.randint(GRID_SIZE - 16, GRID_SIZE - 1)
+            px, py = random.randint(0, GRID_SIZE - 4), random.randint(GRID_SIZE - 7, GRID_SIZE - 4)
         elif side == 2:
-            x, y = random.randint(0, 15), random.randint(0, GRID_SIZE - 1)
+            px, py = random.randint(0, 6), random.randint(0, GRID_SIZE - 4)
         else:
-            x, y = random.randint(GRID_SIZE - 16, GRID_SIZE - 1), random.randint(0, GRID_SIZE - 1)
-        grid_cells[(x, y)] = random.randint(1, 6)
+            px, py = random.randint(GRID_SIZE - 7, GRID_SIZE - 4), random.randint(0, GRID_SIZE - 4)
+
+        place_pattern(px, py, team, pat)
+
+    for _ in range(30):
+        side = random.randint(0, 3)
+        team = random.randint(1, 6)
+        if side == 0:
+            x, y = random.randint(0, GRID_SIZE - 2), random.randint(0, 8)
+        elif side == 1:
+            x, y = random.randint(0, GRID_SIZE - 2), random.randint(GRID_SIZE - 10, GRID_SIZE - 2)
+        elif side == 2:
+            x, y = random.randint(0, 8), random.randint(0, GRID_SIZE - 2)
+        else:
+            x, y = random.randint(GRID_SIZE - 10, GRID_SIZE - 2), random.randint(0, GRID_SIZE - 2)
+
+        for dx, dy in [(0, 0), (1, 0), (0, 1), (1, 1)]:
+            nx, ny = x + dx, y + dy
+            if 0 <= nx < GRID_SIZE and 0 <= ny < GRID_SIZE:
+                grid_cells[(nx, ny)] = team
 
 
 reset_game_state()
@@ -287,11 +325,14 @@ def process_asteroids_physics_tick():
         exp["alpha"] -= 0.15
     explosions[:] = [e for e in explosions if e["alpha"] > 0]
 
+    # Bounded-neighbor Conway scan (no toroidal wrap): removes edge teleporting/square wall feel.
     neighbors_to_check = set()
     for (x, y) in grid_cells.keys():
         for i in range(-1, 2):
             for j in range(-1, 2):
-                neighbors_to_check.add(((x + i + GRID_SIZE) % GRID_SIZE, (y + j + GRID_SIZE) % GRID_SIZE))
+                nx, ny = x + i, y + j
+                if 0 <= nx < GRID_SIZE and 0 <= ny < GRID_SIZE:
+                    neighbors_to_check.add((nx, ny))
 
     next_cells = {}
     for (x, y) in neighbors_to_check:
@@ -300,8 +341,8 @@ def process_asteroids_physics_tick():
             for j in range(-1, 2):
                 if i == 0 and j == 0:
                     continue
-                nx, ny = (x + i + GRID_SIZE) % GRID_SIZE, (y + j + GRID_SIZE) % GRID_SIZE
-                if (nx, ny) in grid_cells:
+                nx, ny = x + i, y + j
+                if 0 <= nx < GRID_SIZE and 0 <= ny < GRID_SIZE and (nx, ny) in grid_cells:
                     counts[grid_cells[(nx, ny)]] += 1
 
         total = sum(counts.values())
@@ -320,8 +361,10 @@ def process_asteroids_physics_tick():
                 continue
             mx, my = x, y
             if random.random() < 0.12 and dist > 0:
-                mx = (x + int(dx / dist) + GRID_SIZE) % GRID_SIZE
-                my = (y + int(dy / dist) + GRID_SIZE) % GRID_SIZE
+                mx = x + int(dx / dist)
+                my = y + int(dy / dist)
+                if not (0 <= mx < GRID_SIZE and 0 <= my < GRID_SIZE):
+                    mx, my = x, y
             next_cells[(mx, my)] = cell_state
 
     grid_cells = next_cells
