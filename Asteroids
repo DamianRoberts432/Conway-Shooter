@@ -6,7 +6,13 @@ import sys
 import serial
 import socket
 import math
-from websockets.asyncio.server import serve
+
+# websockets compatibility import
+try:
+    from websockets.asyncio.server import serve   # websockets >= 13
+except Exception:
+    from websockets.server import serve           # older websockets
+
 from flask import Flask, Response
 
 app = Flask(__name__)
